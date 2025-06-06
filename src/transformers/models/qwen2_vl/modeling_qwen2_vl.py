@@ -1742,9 +1742,7 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
         """
         # 1) encode audio if present
         if audio_arrays is not None:
-            mel = whisper.log_mel_spectrogram(
-                audio_arrays, n_mels=self.audio_encoder.dims.n_mels
-            ).to(self.audio_encoder.device)
+            mel = whisper.log_mel_spectrogram(audio_arrays, n_mels=self.audio_encoder.dims.n_mels).to(self.audio_proj.weight.device)
             with torch.no_grad():
                 audio_hidden = self.audio_encoder(mel)         # [B, T, C]
             audio_hidden = self.audio_proj(audio_hidden)       # align dims
