@@ -1696,6 +1696,9 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
 
         # create a placeholder; real weights loaded outside __init__
         self.audio_encoder = nn.Module()       # no parameters ⇒ no meta copy
+        import whisper, copy
+        wh_enc = whisper.load_model("large-v3-turbo", device="cpu").encoder
+        self.audio_encoder = copy.deepcopy(wh_enc).to(self.device, dtype=self.dtype)
 
     # ---------------------------------------------------------------
     # helper: replace <|audio_pad|>*N with encoder embeddings
