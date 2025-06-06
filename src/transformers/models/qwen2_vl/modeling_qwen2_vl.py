@@ -1680,33 +1680,34 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditional
 from transformers.models.qwen2_vl.configuration_qwen2_vl import AudioQwen2VLConfig
 import torch.nn as nn
 
+# This entire class replaces the old one in your modeling_qwen2_vl.py file
+
 class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
+    """
+    Audio-enabled Qwen2-VL model.
+    Inherits directly from the base class so all base weights are loaded
+    by `from_pretrained` *before* the audio layers are added.
+    """
     config_class = AudioQwen2VLConfig
 
     def __init__(self, config: AudioQwen2VLConfig):
-        # build the **entire** text‑&‑vision backbone first (meta or real)
+        # build the **entire** text-&-vision backbone first
         super().__init__(config)
 
-        # add *only lightweight* audio projection now –
-        # no Whisper weights, just a Linear you’ll train later
+        # add lightweight audio projection layer
         self.audio_proj = nn.Linear(
             config.audio_encoder_hidden_size, config.hidden_size, bias=False
         )
-        self.post_init()                       # init new layer
+        self.post_init()  # init new layer
 
         # create a placeholder; real weights loaded outside __init__
-        self.audio_encoder = nn.Module()       # no parameters ⇒ no meta copy
-        
+        self.audio_encoder = nn.Module()
 
-    # ---------------------------------------------------------------
-    # helper: replace <|audio_pad|>*N with encoder embeddings
-    # ---------------------------------------------------------------
     def _swap_audio_placeholders(self, input_ids, audio_embeds, audio_lengths):
         """
-        input_ids: [B, L] with <|audio_pad|> placeholders
-        audio_embeds: [B, ΣT, D]   – concat embeddings
-        audio_lengths: list[list[int]] – lengths per sample
+        Helper to replace <|audio_pad|>*N with encoder embeddings.
         """
+        # This function from your original code is correct and needs no changes.
         pad_id = self.config.pad_token_id_audio
         out = []
         cursor = 0
@@ -1715,20 +1716,14 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
             new_hidden = []
             off = 0
             for ln in lengths:
-                # find first pad
                 idx = ids.index(pad_id, off)
-                # slice encoder embeddings
                 emb = audio_embeds[b, cursor:cursor+ln, :]
                 cursor += ln
-                # build hidden repr list
                 new_hidden.append((idx, emb))
-                off = idx + 1  # continue search
+                off = idx + 1
             out.append(new_hidden)
         return out
 
-    # ---------------------------------------------------------------
-    # forward - enhanced to handle audio
-    # ---------------------------------------------------------------
     def forward(
         self,
         input_ids=None,
@@ -1737,39 +1732,62 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
         **kwargs,
     ):
         """
-        audio_arrays: float32 [B, ΣT]  (concatenated)
-        audio_lengths: list[list[int]] lengths per audio clip
+        The forward pass, now corrected to handle the model's specific output structure.
         """
-        # 1) encode audio if present
+        # --- FIX: We force the base model to output all hidden states ---
+        # Our logic for swapping audio embeddings depends on this.
+        kwargs["output_hidden_states"] = True
+
+        # 1) Encode audio if present
         if audio_arrays is not None:
-            mel = whisper.log_mel_spectrogram(audio_arrays, n_mels=self.audio_encoder.dims.n_mels).to(self.audio_proj.weight.device)
+            # Calculate mel spectrogram
+            mel = whisper.log_mel_spectrogram(
+                audio_arrays.cpu().numpy(), # log_mel_spectrogram expects a numpy array
+                n_mels=self.audio_encoder.dims.n_mels
+            )
+            mel = torch.from_numpy(mel).to(self.audio_proj.weight.device)
+            
+            # Get audio embeddings
             with torch.no_grad():
-                audio_hidden = self.audio_encoder(mel)         # [B, T, C]
-            audio_hidden = self.audio_proj(audio_hidden)       # align dims
-            audio_hidden = audio_hidden.to(torch.float32)
+                audio_hidden = self.audio_encoder(mel)
+            
+            # Project embeddings and cast to the correct dtype for the main model
+            audio_hidden = self.audio_proj(audio_hidden).to(self.model.dtype)
 
         else:
             audio_hidden = None
 
-        # 2) call parent forward (handles text + vision)
+        # 2) Call the parent model's forward pass
         outputs = super().forward(
             input_ids=input_ids,
             **kwargs,
         )
 
-        # 3) swap placeholders → audio embeddings (only if audio present)
+        # 3) Swap placeholders with audio embeddings if audio was provided
         if audio_hidden is not None:
-            hidden_states = outputs.last_hidden_state.clone()
+            # --- FIX: Retrieve the last hidden state correctly ---
+            # It's the last item in the `hidden_states` tuple, not a separate attribute.
+            last_hidden_state = outputs.hidden_states[-1]
+            
+            # We need to clone it to modify it
+            modified_hidden_state = last_hidden_state.clone()
+
             swaps = self._swap_audio_placeholders(
                 input_ids, audio_hidden, audio_lengths
             )
+            
+            # Perform the swap
             for b, repl in enumerate(swaps):
                 for idx, emb in repl:
-                    hidden_states[b, idx : idx + emb.shape[0], :] = emb
-            outputs.last_hidden_state = hidden_states
+                    modified_hidden_state[b, idx : idx + emb.shape[0], :] = emb
+            
+            # --- FIX: Recalculate logits using our modified hidden state ---
+            # This is necessary because the original logits were based on the un-swapped state.
+            new_logits = self.lm_head(modified_hidden_state)
+            
+            # Update the logits in the output object before returning
+            outputs.logits = new_logits
 
         return outputs
 
-import whisper
-import torch
-import torch.nn as nn
+
