@@ -1793,6 +1793,6 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
 
         return outputs
 
-        return outputs
+
 
 
