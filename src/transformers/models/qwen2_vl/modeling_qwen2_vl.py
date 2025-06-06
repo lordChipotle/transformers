@@ -1746,6 +1746,8 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
             with torch.no_grad():
                 audio_hidden = self.audio_encoder(mel)         # [B, T, C]
             audio_hidden = self.audio_proj(audio_hidden)       # align dims
+            audio_hidden = audio_hidden.to(torch.float32)
+
         else:
             audio_hidden = None
 
