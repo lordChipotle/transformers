@@ -322,3 +322,21 @@ class Qwen2VLConfig(PretrainedConfig):
 
 
 __all__ = ["Qwen2VLConfig", "Qwen2VLTextConfig"]
+
+# ------------------------------------------------------------------
+#  Audio‑enabled variant
+# ------------------------------------------------------------------
+class AudioQwen2VLConfig(Qwen2VLConfig):
+    model_type = "qwen2_vl_audio"
+
+    def __init__(
+        self,
+        audio_encoder_hidden_size: int = 1280,
+        audio_projection_size: int = 2048,
+        max_audio_tokens: int = 1500,
+        **kwargs,
+    ):
+        self.audio_encoder_hidden_size = audio_encoder_hidden_size
+        self.audio_projection_size = audio_projection_size
+        self.max_audio_tokens = max_audio_tokens
+        super().__init__(**kwargs)

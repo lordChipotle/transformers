@@ -1670,3 +1670,109 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel, GenerationMixin):
 
 
 __all__ = ["Qwen2VLForConditionalGeneration", "Qwen2VLModel", "Qwen2VLPreTrainedModel", "Qwen2VLTextModel"]
+
+# ------------------------------------------------------------------
+#  Audio‑aware Qwen2‑VL model additions
+# ------------------------------------------------------------------
+
+# Additional imports for audio support
+from transformers.models.qwen2_vl.configuration_qwen2_vl import AudioQwen2VLConfig
+
+
+class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
+    """
+    Audio‑enabled Qwen2‑VL model.
+    Inherits directly from the base class so all base weights are loaded
+    by `from_pretrained` *before* the audio layers are added, avoiding the
+    meta‑tensor copy error.
+    """
+
+    config_class = AudioQwen2VLConfig
+
+    def __init__(self, config: AudioQwen2VLConfig):
+        super().__init__(config)            # builds text+vision backbone
+
+        # -------- audio branch ------------------------------------
+        self.audio_encoder = whisper.load_model("large-v3").encoder
+        self.audio_proj = nn.Linear(
+            config.audio_encoder_hidden_size,
+            config.hidden_size,
+            bias=False,
+        )
+        self.post_init()                    # init new weights only
+
+    # ---------------------------------------------------------------
+    # helper: replace <|audio_pad|>*N with encoder embeddings
+    # ---------------------------------------------------------------
+    def _swap_audio_placeholders(self, input_ids, audio_embeds, audio_lengths):
+        """
+        input_ids: [B, L] with <|audio_pad|> placeholders
+        audio_embeds: [B, ΣT, D]   – concat embeddings
+        audio_lengths: list[list[int]] – lengths per sample
+        """
+        pad_id = self.config.pad_token_id_audio
+        out = []
+        cursor = 0
+        for b, lengths in enumerate(audio_lengths):
+            ids = input_ids[b].tolist()
+            new_hidden = []
+            off = 0
+            for ln in lengths:
+                # find first pad
+                idx = ids.index(pad_id, off)
+                # slice encoder embeddings
+                emb = audio_embeds[b, cursor:cursor+ln, :]
+                cursor += ln
+                # build hidden repr list
+                new_hidden.append((idx, emb))
+                off = idx + 1  # continue search
+            out.append(new_hidden)
+        return out
+
+    # ---------------------------------------------------------------
+    # forward - enhanced to handle audio
+    # ---------------------------------------------------------------
+    def forward(
+        self,
+        input_ids=None,
+        audio_arrays=None,
+        audio_lengths=None,
+        **kwargs,
+    ):
+        """
+        audio_arrays: float32 [B, ΣT]  (concatenated)
+        audio_lengths: list[list[int]] lengths per audio clip
+        """
+        # 1) encode audio if present
+        if audio_arrays is not None:
+            mel = whisper.log_mel_spectrogram(
+                audio_arrays, n_mels=self.audio_encoder.dims.n_mels
+            ).to(self.audio_encoder.device)
+            with torch.no_grad():
+                audio_hidden = self.audio_encoder(mel)         # [B, T, C]
+            audio_hidden = self.audio_proj(audio_hidden)       # align dims
+        else:
+            audio_hidden = None
+
+        # 2) call parent forward (handles text + vision)
+        outputs = super().forward(
+            input_ids=input_ids,
+            **kwargs,
+        )
+
+        # 3) swap placeholders → audio embeddings (only if audio present)
+        if audio_hidden is not None:
+            hidden_states = outputs.last_hidden_state.clone()
+            swaps = self._swap_audio_placeholders(
+                input_ids, audio_hidden, audio_lengths
+            )
+            for b, repl in enumerate(swaps):
+                for idx, emb in repl:
+                    hidden_states[b, idx : idx + emb.shape[0], :] = emb
+            outputs.last_hidden_state = hidden_states
+
+        return outputs
+
+import whisper
+import torch
+import torch.nn as nn

@@ -273,3 +273,35 @@ class Qwen2VLProcessor(ProcessorMixin):
 
 
 __all__ = ["Qwen2VLProcessor"]
+
+# ---------------------------------------------------------------------
+# Audio utilities added by the audio_support fork
+# ---------------------------------------------------------------------
+import numpy as np
+
+def expand_audio_pad(tokenizer, audio_lengths):
+    """Return a 1‑D list of <|audio_pad|> token‑ids repeated according
+    to *audio_lengths* (one entry per audio clip)."""
+    pad_id = tokenizer.convert_tokens_to_ids("<|audio_pad|>")
+    return [pad_id for ln in audio_lengths for _ in range(ln)]
+
+def process_audio_info(messages, tokenizer, return_audio_lengths=False):
+    """Scan *messages* for items of the form
+    {"type": "audio", "array": np.ndarray}
+    and return:
+      • concatenated waveform (np.float32)
+      • list[int] with the individual lengths
+    The helper mirrors *process_vision_info* for images/videos."""
+    audio_arrays, lengths = [], []
+    for msg in messages:
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for itm in content:
+                if isinstance(itm, dict) and itm.get("type") == "audio":
+                    arr = itm["array"].astype("float32")
+                    audio_arrays.append(arr)
+                    lengths.append(len(arr))
+    if len(audio_arrays) == 0:
+        return ([], []) if return_audio_lengths else []
+    concat = np.concatenate(audio_arrays, axis=0)
+    return (concat, lengths) if return_audio_lengths else concat
