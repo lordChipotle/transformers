@@ -1679,12 +1679,11 @@ __all__ = ["Qwen2VLForConditionalGeneration", "Qwen2VLModel", "Qwen2VLPreTrained
 from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
 from transformers.models.qwen2_vl.configuration_qwen2_vl import AudioQwen2VLConfig
 import torch.nn as nn
+# This entire class replaces the old one in your modeling_qwen2_vl.py file
 
 import torch
 import torch.nn as nn
-import whisper # <-- FIX: Added the missing import
-
-# This entire class replaces the old one in your modeling_qwen2_vl.py file
+import whisper
 
 class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
     """
@@ -1711,7 +1710,6 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
         """
         Helper to replace <|audio_pad|>*N with encoder embeddings.
         """
-        # This function from your original code is correct and needs no changes.
         pad_id = self.config.pad_token_id_audio
         out = []
         cursor = 0
@@ -1736,27 +1734,31 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
         **kwargs,
     ):
         """
-        The forward pass, now corrected to handle the model's specific output structure.
+        The forward pass, now corrected to handle data types and model output structure.
         """
-        # --- FIX: We force the base model to output all hidden states ---
-        # Our logic for swapping audio embeddings depends on this.
         kwargs["output_hidden_states"] = True
 
         # 1) Encode audio if present
         if audio_arrays is not None:
-            # Calculate mel spectrogram
+            # FIX: Ensure input to whisper.log_mel_spectrogram is a CPU numpy array.
+            audio_np = audio_arrays.cpu().numpy()
+
+            # Calculate mel spectrogram.
             mel = whisper.log_mel_spectrogram(
-                audio_arrays.cpu().numpy(), # log_mel_spectrogram expects a numpy array
-                n_mels=self.audio_encoder.dims.n_mels
+                audio_np, n_mels=self.audio_encoder.dims.n_mels
             )
-            mel = torch.from_numpy(mel).to(self.audio_proj.weight.device)
-            
+            # The 'mel' tensor is on CPU because the whisper model was loaded on CPU.
+            # Move it to the same device as the audio projection layer.
+            mel = mel.to(self.audio_proj.weight.device)
+
             # Get audio embeddings
             with torch.no_grad():
                 audio_hidden = self.audio_encoder(mel)
-            
-            # Project embeddings and cast to the correct dtype for the main model
-            audio_hidden = self.audio_proj(audio_hidden).to(self.model.dtype)
+
+            # Project embeddings and cast to the main model's dtype for compatibility
+            # with the rest of the model (e.g., LayerNorm layers).
+            # We use self.dtype, which is a robust way to get the model's primary data type.
+            audio_hidden = self.audio_proj(audio_hidden).to(self.dtype)
 
         else:
             audio_hidden = None
@@ -1769,28 +1771,27 @@ class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
 
         # 3) Swap placeholders with audio embeddings if audio was provided
         if audio_hidden is not None:
-            # --- FIX: Retrieve the last hidden state correctly ---
-            # It's the last item in the `hidden_states` tuple, not a separate attribute.
+            # Retrieve the last hidden state correctly from the 'hidden_states' tuple
             last_hidden_state = outputs.hidden_states[-1]
-            
-            # We need to clone it to modify it
+
             modified_hidden_state = last_hidden_state.clone()
 
             swaps = self._swap_audio_placeholders(
                 input_ids, audio_hidden, audio_lengths
             )
-            
+
             # Perform the swap
             for b, repl in enumerate(swaps):
                 for idx, emb in repl:
                     modified_hidden_state[b, idx : idx + emb.shape[0], :] = emb
-            
-            # --- FIX: Recalculate logits using our modified hidden state ---
-            # This is necessary because the original logits were based on the un-swapped state.
+
+            # Recalculate logits using our modified hidden state
             new_logits = self.lm_head(modified_hidden_state)
-            
+
             # Update the logits in the output object before returning
             outputs.logits = new_logits
+
+        return outputs
 
         return outputs
 
