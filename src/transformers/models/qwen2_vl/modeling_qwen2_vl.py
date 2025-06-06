@@ -1680,6 +1680,10 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditional
 from transformers.models.qwen2_vl.configuration_qwen2_vl import AudioQwen2VLConfig
 import torch.nn as nn
 
+import torch
+import torch.nn as nn
+import whisper # <-- FIX: Added the missing import
+
 # This entire class replaces the old one in your modeling_qwen2_vl.py file
 
 class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
