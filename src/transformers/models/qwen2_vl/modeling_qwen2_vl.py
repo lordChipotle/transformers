@@ -1676,30 +1676,26 @@ __all__ = ["Qwen2VLForConditionalGeneration", "Qwen2VLModel", "Qwen2VLPreTrained
 # ------------------------------------------------------------------
 
 # Additional imports for audio support
+from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
 from transformers.models.qwen2_vl.configuration_qwen2_vl import AudioQwen2VLConfig
-
+import torch.nn as nn
 
 class AudioQwen2VLForConditionalGeneration(Qwen2VLForConditionalGeneration):
-    """
-    Audio‑enabled Qwen2‑VL model.
-    Inherits directly from the base class so all base weights are loaded
-    by `from_pretrained` *before* the audio layers are added, avoiding the
-    meta‑tensor copy error.
-    """
-
     config_class = AudioQwen2VLConfig
 
     def __init__(self, config: AudioQwen2VLConfig):
-        super().__init__(config)            # builds text+vision backbone
+        # build the **entire** text‑&‑vision backbone first (meta or real)
+        super().__init__(config)
 
-        # -------- audio branch ------------------------------------
-        self.audio_encoder = whisper.load_model("large-v3").encoder
+        # add *only lightweight* audio projection now –
+        # no Whisper weights, just a Linear you’ll train later
         self.audio_proj = nn.Linear(
-            config.audio_encoder_hidden_size,
-            config.hidden_size,
-            bias=False,
+            config.audio_encoder_hidden_size, config.hidden_size, bias=False
         )
-        self.post_init()                    # init new weights only
+        self.post_init()                       # init new layer
+
+        # create a placeholder; real weights loaded outside __init__
+        self.audio_encoder = nn.Module()       # no parameters ⇒ no meta copy
 
     # ---------------------------------------------------------------
     # helper: replace <|audio_pad|>*N with encoder embeddings
